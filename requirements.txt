@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+streamlit
+requests
+python-dotenv
+pydantic
+pandas
+numpy
+akshare>=1.14.0
+baostock
+httpx
+langchain-core
