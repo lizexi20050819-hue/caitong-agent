@@ -80,15 +80,31 @@
 
 ## 安装
 
-```powershell
-cd c:\Users\kongd\PycharmProjects\PythonProject2
+**1. 克隆仓库并进入项目目录**
 
-# 创建并激活虚拟环境（若尚未创建）
+```powershell
+git clone https://github.com/lizexi20050819-hue/caitong-agent.git
+cd caitong-agent
+```
+
+若已下载 ZIP，解压后在该文件夹内打开终端即可，无需 `git clone`。
+
+**2. 创建虚拟环境并安装依赖（Windows PowerShell）**
+
+```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-
 python -m pip install -r requirements.txt
 copy .env.example .env
+```
+
+**macOS / Linux：**
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
 ```
 
 编辑 `.env`，至少配置一种 LLM：
@@ -107,13 +123,15 @@ DEEPSEEK_MODEL=deepseek-chat
 
 ## 启动
 
-**方式一：一键启动前后端**
+以下命令均在**项目根目录**（含 `README.md`、`backend/` 的目录）执行。
+
+**方式一：一键启动前后端（Windows）**
 
 ```powershell
 .\scripts\run_all.ps1
 ```
 
-**方式二：分别启动**
+**方式二：分别启动（Windows）**
 
 ```powershell
 # 终端 1 — 后端
@@ -121,6 +139,25 @@ DEEPSEEK_MODEL=deepseek-chat
 
 # 终端 2 — 前端
 .\scripts\run_frontend.ps1
+```
+
+**手动启动（项目根目录，已激活 `.venv`）：**
+
+```powershell
+# 终端 1 — 后端（PowerShell）
+$env:PYTHONPATH = (Get-Location).Path
+python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8001
+```
+
+```bash
+# 终端 1 — 后端（bash）
+export PYTHONPATH="$PWD"
+python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8001
+```
+
+```bash
+# 终端 2 — 前端（PowerShell / bash 相同）
+streamlit run frontend/streamlit_app.py
 ```
 
 访问地址：
@@ -186,8 +223,11 @@ skill/
 
 **单独运行 UZI-Skill（可选，与主应用无关）：**
 
+本仓库未包含 `skill/` 目录，需自行克隆 [UZI-Skill](https://github.com/wbh604/UZI-Skill)：
+
 ```powershell
-cd skill\UZI-Skill-3.6.0
+git clone https://github.com/wbh604/UZI-Skill.git
+cd UZI-Skill
 pip install -r requirements.txt
 python run.py 600519
 ```
