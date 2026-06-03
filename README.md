@@ -47,7 +47,7 @@
   └────────────────────────────┘
        │
        ▼
-  多轮对话（Session 记忆）
+  多轮对话（SQLite Session 持久化）
 ```
 
 **Agent 能力：**
@@ -207,6 +207,7 @@ backend/
     models.py                 # Pydantic 请求/响应模型
     services/
       agent.py                # Agent 主循环（Function Calling + 多轮记忆）
+      session_store.py        # SQLite 多轮对话持久化
       tools.py                # 12 个 LangChain 工具 + OpenAI schema
       llm.py                  # LLM 配置加载（DeepSeek / OpenAI）
       market_data.py          # A 股行情（baostock + 东方财富）
@@ -251,14 +252,14 @@ python run.py 600519
 
 ## 已知限制
 
-- 对话 Session 存于内存，后端重启后丢失
+- 多轮对话 Session 存于 SQLite（`data/sessions.db`），重启后端不丢失；多进程部署需改 Redis
 - 主要覆盖 **A 股个股与场内 ETF**，暂不支持港股/美股完整分析链路
 - 部分数据源（akshare / 东方财富）可能受网络环境影响
 - 投资人 persona 目前为 8 位（UZI-Skill 参考包中有 51 位，未接入主应用）
 
 ## 后续可扩展方向
 
-- Session 持久化（Redis / SQLite）
+- Redis 多实例 Session 共享
 - 异步任务队列与长分析进度推送
 - 扩展更多投资人 persona 与流派评分
 - 生成自包含 HTML 研报

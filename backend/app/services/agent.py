@@ -15,6 +15,12 @@ from typing import Any
 import httpx
 
 from backend.app.services.llm import load_config
+from backend.app.services.session_store import (
+    delete_session,
+    list_sessions,
+    load_session,
+    save_session,
+)
 from backend.app.services.tools import TOOL_MAP, TOOL_SCHEMAS
 
 logger = logging.getLogger(__name__)
@@ -65,8 +71,12 @@ SYSTEM_PROMPT = """你是 A 股首席分析师。你可以调用工具获取真�
 > 不构成投资建议
 """
 
-# In-memory conversation store: {conversation_id: [messages]}
-_sessions: dict[str, list[dict]] = {}
+def _append_assistant_reply(response: dict, messages: list[dict]) -> None:
+    """Persist final assistant text when this turn has no tool_calls."""
+    msg = response["choices"][0]["message"]
+    if msg.get("tool_calls"):
+        return
+    messages.append({"role": "assistant", "content": msg.get("content") or ""})
 
 
 def _call_llm(messages: list[dict], tools: list[dict] | None = None) -> dict:
@@ -170,7 +180,6 @@ def start_chat(user_message: str) -> dict[str, Any]:
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user_message},
     ]
-    _sessions[conv_id] = messages
 
     thinking: list[str] = []
     tools_used: list[str] = []
@@ -182,6 +191,8 @@ def start_chat(user_message: str) -> dict[str, Any]:
         tools_used.extend(new_tools)
 
         if not response["choices"][0]["message"].get("tool_calls"):
+            _append_assistant_reply(response, messages)
+            save_session(conv_id, messages)
             return {
                 "conversation_id": conv_id,
                 "response": response["choices"][0]["message"]["content"] or "",
@@ -191,6 +202,8 @@ def start_chat(user_message: str) -> dict[str, Any]:
 
     messages.append({"role": "user", "content": "请给出最终分析结论。"})
     final = _call_llm(messages)
+    _append_assistant_reply(final, messages)
+    save_session(conv_id, messages)
     return {
         "conversation_id": conv_id,
         "response": final["choices"][0]["message"].get("content", ""),
@@ -201,9 +214,10 @@ def start_chat(user_message: str) -> dict[str, Any]:
 
 def continue_chat(conv_id: str, user_message: str) -> dict[str, Any]:
     """继续已有对话。Agent 记得之前的上下文和工具调用结果。"""
-    messages = _sessions.get(conv_id)
-    if messages is None:
+    loaded = load_session(conv_id)
+    if loaded is None:
         return {"error": "对话已过期，请重新开始", "conversation_id": None}
+    messages = loaded
 
     messages.append({"role": "user", "content": user_message})
 
@@ -217,6 +231,8 @@ def continue_chat(conv_id: str, user_message: str) -> dict[str, Any]:
         tools_used.extend(new_tools)
 
         if not response["choices"][0]["message"].get("tool_calls"):
+            _append_assistant_reply(response, messages)
+            save_session(conv_id, messages)
             return {
                 "conversation_id": conv_id,
                 "response": response["choices"][0]["message"]["content"] or "",
@@ -225,6 +241,8 @@ def continue_chat(conv_id: str, user_message: str) -> dict[str, Any]:
             }
 
     final = _call_llm(messages)
+    _append_assistant_reply(final, messages)
+    save_session(conv_id, messages)
     return {
         "conversation_id": conv_id,
         "response": final["choices"][0]["message"].get("content", ""),
@@ -234,21 +252,10 @@ def continue_chat(conv_id: str, user_message: str) -> dict[str, Any]:
 
 
 def list_chats() -> list[dict]:
-    """List all active conversations with preview."""
-    result = []
-    for cid, msgs in _sessions.items():
-        preview = ""
-        for m in msgs:
-            if m["role"] == "user":
-                preview = m["content"][:50]
-                break
-        result.append({"conversation_id": cid, "preview": preview})
-    return result
+    """List all conversations with preview (from SQLite)."""
+    return list_sessions()
 
 
 def delete_chat(conv_id: str) -> bool:
     """Delete a conversation."""
-    if conv_id in _sessions:
-        del _sessions[conv_id]
-        return True
-    return False
+    return delete_session(conv_id)
