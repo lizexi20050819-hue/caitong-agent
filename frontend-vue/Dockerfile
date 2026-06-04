@@ -1,4 +1,4 @@
-root@iZbp1hwi80vrg64g1enn96Z:~/caitong-agent# cat Dockerfile
+
 FROM python:3.11-slim-bookworm
 WORKDIR /app
 COPY requirements.txt .
