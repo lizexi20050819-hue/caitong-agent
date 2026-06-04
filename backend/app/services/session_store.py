@@ -1,4 +1,4 @@
-"""SQLite-backed chat session store — survives backend restarts."""
+"""SQLite-backed chat session store — survives backend restarts, scoped by visitor cookie."""
 
 from __future__ import annotations
 
@@ -39,45 +39,58 @@ def init_db() -> None:
             )
             """
         )
+        # Migration: add visitor_id column for cookie-based isolation
+        try:
+            conn.execute(
+                "ALTER TABLE chat_sessions ADD COLUMN visitor_id TEXT NOT NULL DEFAULT ''"
+            )
+        except sqlite3.OperationalError:
+            pass  # column already exists
         conn.commit()
 
 
-def save_session(conversation_id: str, messages: list[dict[str, Any]]) -> None:
+def save_session(
+    conversation_id: str, messages: list[dict[str, Any]], visitor_id: str = ""
+) -> None:
     init_db()
     now = time.time()
     payload = json.dumps(messages, ensure_ascii=False)
     with _connect() as conn:
         conn.execute(
             """
-            INSERT INTO chat_sessions (conversation_id, messages_json, created_at, updated_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO chat_sessions
+                (conversation_id, messages_json, created_at, updated_at, visitor_id)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(conversation_id) DO UPDATE SET
                 messages_json = excluded.messages_json,
-                updated_at = excluded.updated_at
+                updated_at = excluded.updated_at,
+                visitor_id = excluded.visitor_id
             """,
-            (conversation_id, payload, now, now),
+            (conversation_id, payload, now, now, visitor_id),
         )
         conn.commit()
 
 
-def load_session(conversation_id: str) -> list[dict[str, Any]] | None:
+def load_session(
+    conversation_id: str, visitor_id: str = ""
+) -> list[dict[str, Any]] | None:
     init_db()
     with _connect() as conn:
         row = conn.execute(
-            "SELECT messages_json FROM chat_sessions WHERE conversation_id = ?",
-            (conversation_id,),
+            "SELECT messages_json FROM chat_sessions WHERE conversation_id = ? AND visitor_id = ?",
+            (conversation_id, visitor_id),
         ).fetchone()
     if row is None:
         return None
     return json.loads(row["messages_json"])
 
 
-def delete_session(conversation_id: str) -> bool:
+def delete_session(conversation_id: str, visitor_id: str = "") -> bool:
     init_db()
     with _connect() as conn:
         cur = conn.execute(
-            "DELETE FROM chat_sessions WHERE conversation_id = ?",
-            (conversation_id,),
+            "DELETE FROM chat_sessions WHERE conversation_id = ? AND visitor_id = ?",
+            (conversation_id, visitor_id),
         )
         conn.commit()
         return cur.rowcount > 0
@@ -101,13 +114,15 @@ def session_status(messages: list[dict[str, Any]]) -> str:
     return "pending"
 
 
-def ui_messages(conversation_id: str) -> list[dict[str, str]] | None:
+def ui_messages(
+    conversation_id: str, visitor_id: str = ""
+) -> list[dict[str, str]] | None:
     """Extract user/assistant bubbles for the UI (no system/tool).
 
     带 tool_calls 的 assistant 消息是调工具前的过程说明，仅用于 LLM 上下文，
     不应作为聊天气泡展示（否则会与最终报告重复出现）。
     """
-    raw = load_session(conversation_id)
+    raw = load_session(conversation_id, visitor_id)
     if raw is None:
         return None
     ui: list[dict[str, str]] = []
@@ -121,15 +136,17 @@ def ui_messages(conversation_id: str) -> list[dict[str, str]] | None:
     return ui
 
 
-def list_sessions() -> list[dict[str, str]]:
+def list_sessions(visitor_id: str = "") -> list[dict[str, str]]:
     init_db()
     with _connect() as conn:
         rows = conn.execute(
             """
             SELECT conversation_id, messages_json, updated_at
             FROM chat_sessions
+            WHERE visitor_id = ?
             ORDER BY updated_at DESC
-            """
+            """,
+            (visitor_id,),
         ).fetchall()
     result: list[dict[str, str]] = []
     for row in rows:
@@ -146,9 +163,11 @@ def list_sessions() -> list[dict[str, str]]:
             preview = ""
         if status == "pending":
             preview = f"{preview}（生成中…）" if preview else "（生成中…）"
-        result.append({
-            "conversation_id": row["conversation_id"],
-            "preview": preview,
-            "status": status,
-        })
+        result.append(
+            {
+                "conversation_id": row["conversation_id"],
+                "preview": preview,
+                "status": status,
+            }
+        )
     return result

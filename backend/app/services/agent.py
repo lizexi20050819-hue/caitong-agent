@@ -184,6 +184,7 @@ def analyze(user_message: str) -> dict[str, Any]:
 def _run_chat_loop(
     conv_id: str,
     messages: list[dict[str, Any]],
+    visitor_id: str = "",
     *,
     max_rounds: int = 6,
     force_final_prompt: str = "请给出最终分析结论。",
@@ -200,7 +201,7 @@ def _run_chat_loop(
 
         if not response["choices"][0]["message"].get("tool_calls"):
             _append_assistant_reply(response, messages)
-            save_session(conv_id, messages)
+            save_session(conv_id, messages, visitor_id)
             return {
                 "conversation_id": conv_id,
                 "response": response["choices"][0]["message"]["content"] or "",
@@ -212,7 +213,7 @@ def _run_chat_loop(
     messages.append({"role": "user", "content": force_final_prompt})
     final = _call_llm(messages)
     _append_assistant_reply(final, messages)
-    save_session(conv_id, messages)
+    save_session(conv_id, messages, visitor_id)
     return {
         "conversation_id": conv_id,
         "response": final["choices"][0]["message"].get("content", ""),
@@ -222,14 +223,14 @@ def _run_chat_loop(
     }
 
 
-def begin_chat(user_message: str) -> dict[str, Any]:
+def begin_chat(user_message: str, visitor_id: str = "") -> dict[str, Any]:
     """创建新对话并立即落库（仅 system + user），供前端立刻显示在历史中。"""
     conv_id = str(uuid.uuid4())[:8]
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user_message},
     ]
-    save_session(conv_id, messages)
+    save_session(conv_id, messages, visitor_id)
     preview = user_message[:50]
     return {
         "conversation_id": conv_id,
@@ -238,61 +239,62 @@ def begin_chat(user_message: str) -> dict[str, Any]:
     }
 
 
-def run_chat(conv_id: str) -> dict[str, Any]:
+def run_chat(conv_id: str, visitor_id: str = "") -> dict[str, Any]:
     """对 pending 会话执行 Agent，生成 assistant 回复。"""
-    messages = load_session(conv_id)
+    messages = load_session(conv_id, visitor_id)
     if messages is None:
         return {"error": "对话不存在", "conversation_id": conv_id}
     if session_status(messages) != "pending":
         return {"error": "当前对话不在等待回复状态", "conversation_id": conv_id}
-    return _run_chat_loop(conv_id, messages, max_rounds=6)
+    return _run_chat_loop(conv_id, messages, visitor_id, max_rounds=6)
 
 
-def start_chat(user_message: str) -> dict[str, Any]:
+def start_chat(user_message: str, visitor_id: str = "") -> dict[str, Any]:
     """开始新对话（一次性：创建 + 跑 Agent）。Streamlit 等单请求客户端仍可用。"""
-    begun = begin_chat(user_message)
+    begun = begin_chat(user_message, visitor_id)
     if begun.get("error"):
         return begun
-    result = run_chat(begun["conversation_id"])
+    result = run_chat(begun["conversation_id"], visitor_id)
     if result.get("error"):
         return result
     return result
 
 
-def continue_chat(conv_id: str, user_message: str) -> dict[str, Any]:
+def continue_chat(conv_id: str, user_message: str, visitor_id: str = "") -> dict[str, Any]:
     """继续已有对话。Agent 记得之前的上下文和工具调用结果。"""
-    loaded = load_session(conv_id)
+    loaded = load_session(conv_id, visitor_id)
     if loaded is None:
         return {"error": "对话已过期，请重新开始", "conversation_id": None}
     messages = loaded
 
     messages.append({"role": "user", "content": user_message})
-    save_session(conv_id, messages)
+    save_session(conv_id, messages, visitor_id)
 
     return _run_chat_loop(
         conv_id,
         messages,
+        visitor_id,
         max_rounds=4,
         force_final_prompt="请基于上下文给出回答。",
     )
 
 
-def list_chats() -> list[dict]:
-    """List all conversations with preview (from SQLite)."""
-    return list_sessions()
+def list_chats(visitor_id: str = "") -> list[dict]:
+    """List all conversations for a visitor (from SQLite)."""
+    return list_sessions(visitor_id)
 
 
-def delete_chat(conv_id: str) -> bool:
-    """Delete a conversation."""
-    return delete_session(conv_id)
+def delete_chat(conv_id: str, visitor_id: str = "") -> bool:
+    """Delete a conversation (visitor-scoped)."""
+    return delete_session(conv_id, visitor_id)
 
 
-def get_chat_history(conv_id: str) -> dict[str, Any] | None:
+def get_chat_history(conv_id: str, visitor_id: str = "") -> dict[str, Any] | None:
     """Load conversation for UI restore after page/backend restart."""
-    raw = load_session(conv_id)
+    raw = load_session(conv_id, visitor_id)
     if raw is None:
         return None
-    ui = ui_messages(conv_id)
+    ui = ui_messages(conv_id, visitor_id)
     if ui is None:
         return None
     preview = ""

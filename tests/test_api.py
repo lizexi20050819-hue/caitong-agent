@@ -7,13 +7,19 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.app.main import app
+from backend.app.main import app, get_visitor_id
 from backend.app.services import session_store
+
+# Fixed visitor_id for deterministic test assertions
+TEST_VISITOR = "test-visitor"
 
 
 @pytest.fixture()
 def client():
-    return TestClient(app)
+    """TestClient with visitor_id dependency overridden to a known value."""
+    app.dependency_overrides[get_visitor_id] = lambda: TEST_VISITOR
+    yield TestClient(app)
+    app.dependency_overrides.clear()
 
 
 def test_health(client):
@@ -41,6 +47,7 @@ def test_chat_get_history(client, temp_db):
             {"role": "user", "content": "分析宁德时代"},
             {"role": "assistant", "content": "宁德时代结论摘要"},
         ],
+        visitor_id=TEST_VISITOR,
     )
     resp = client.get("/api/chat/hist01")
     assert resp.status_code == 200
@@ -53,11 +60,16 @@ def test_chat_get_history(client, temp_db):
 
 
 def test_chat_delete(client, temp_db):
-    session_store.save_session("delme", [{"role": "user", "content": "hi"}])
+    session_store.save_session(
+        "delme", [{"role": "user", "content": "hi"}], visitor_id=TEST_VISITOR
+    )
     resp = client.delete("/api/chat/delme")
     assert resp.status_code == 200
     assert resp.json()["deleted"] is True
-    assert session_store.load_session("delme") is None
+    assert session_store.load_session("delme", visitor_id=TEST_VISITOR) is None
+
+
+# ── 以下测试 mock 了 agent 层，visitor_id 不影响 ──────────────────────────
 
 
 @patch("backend.app.main.begin_chat")
