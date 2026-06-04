@@ -1,6 +1,9 @@
 services:
   backend:
-    build: .
+    build:
+      context: .
+      provenance: false
+      sbom: false
     container_name: caitong-backend
     restart: always
     environment:
@@ -18,7 +21,10 @@ services:
       - caitong-net
 
   frontend:
-    build: ./frontend-vue
+    build:
+      context: ./frontend-vue
+      provenance: false
+      sbom: false
     container_name: caitong-frontend
     restart: always
     ports:

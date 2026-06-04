@@ -264,6 +264,95 @@ python run.py 600519
 | `get_etf_performance` | ETF 近期收益、波动率 |
 | `role_play_investor` | 知名投资人 persona 评审 |
 
+## 上线部署（Docker，推荐）
+
+项目已包含 `Dockerfile`、`frontend-vue/Dockerfile`、`docker-compose.yml`。对外只暴露 **80 端口**（Nginx 托管 Vue + 反向代理 `/api` 到后端）。
+
+### 1. 准备一台 Linux 服务器
+
+- 建议：2 核 4G 内存以上（akshare / pandas 较吃资源）
+- 系统：Ubuntu 22.04 / Debian 12 等
+- 安装 Docker 与 Docker Compose v2
+
+```bash
+# Ubuntu 示例
+sudo apt update && sudo apt install -y git docker.io docker-compose-v2
+sudo usermod -aG docker $USER
+# 重新登录后生效
+```
+
+### 2. 首次部署（手动）
+
+```bash
+git clone https://github.com/lizexi20050819-hue/caitong-agent.git
+cd caitong-agent
+
+cp .env.example .env
+# 编辑 .env，至少填写 DEEPSEEK_API_KEY（或 OPENAI_API_KEY）
+nano .env
+
+mkdir -p data   # SQLite 会话库持久化目录
+
+docker compose up -d --build
+docker compose ps
+```
+
+浏览器访问：`http://你的服务器IP`（或绑定域名后访问域名）。
+
+健康检查：`http://你的服务器IP/health` 应返回 `{"status":"ok"}`。
+
+### 3. 环境变量（`.env`）
+
+| 变量 | 说明 |
+|------|------|
+| `LLM_PROVIDER` | `deepseek` 或 `openai` |
+| `DEEPSEEK_API_KEY` | DeepSeek Key（上线必填其一） |
+| `OPENAI_API_KEY` | OpenAI 兼容 Key |
+| `SESSION_DB_PATH` | compose 已映射到 `/app/data/sessions.db`，一般不用改 |
+
+**切勿**把 `.env` 提交到 Git；Key 只放在服务器本地。
+
+### 4. 自动部署（GitHub Actions）
+
+推送 `main` 分支可触发 `.github/workflows/deploy.yml`（需先在仓库 Settings → Secrets 配置）：
+
+| Secret | 说明 |
+|--------|------|
+| `SERVER_HOST` | 服务器 IP 或域名 |
+| `SERVER_USER` | SSH 用户名 |
+| `SERVER_SSH_KEY` | SSH 私钥 |
+| `LLM_PROVIDER` | 同 `.env` |
+| `DEEPSEEK_API_KEY` | 同 `.env` |
+| `DEEPSEEK_MODEL` | 可选 |
+
+服务器上需**先手动** `git clone` 到 `/home/<用户>/caitong-agent`（路径与 workflow 中一致），之后每次 push `main` 会自动 `git pull` + `docker compose up -d --build`。
+
+### 5. HTTPS（可选，建议）
+
+compose 默认 HTTP 80。生产环境建议：
+
+- 用 **Nginx / Caddy** 在宿主机做 443 终止，反代到 `127.0.0.1:80`；或
+- 域名接入 **Cloudflare** 开启 HTTPS
+
+### 6. 运维常用命令
+
+```bash
+docker compose logs -f backend    # 看后端日志
+docker compose logs -f frontend
+docker compose restart backend
+docker compose down && docker compose up -d --build   # 更新代码后重建
+```
+
+`data/sessions.db` 在宿主机 `./data/` 目录，备份该目录即可保留历史对话。
+
+### 7. 上线前检查清单
+
+- [ ] `.env` 中 LLM Key 已配置且有效
+- [ ] 服务器能访问外网（DeepSeek API、akshare 数据源）
+- [ ] 安全组 / 防火墙放行 80（若用 HTTPS 再放行 443）
+- [ ] 本地 `docker compose up -d --build` 能跑通再推到服务器
+- [ ] 跑一遍 `pytest` 确保无回归
+
 ## 已知限制
 
 - 多轮对话 Session 存于 SQLite（`data/sessions.db`），重启后端不丢失；多进程部署需改 Redis

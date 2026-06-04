@@ -5,16 +5,18 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# 系统依赖（akshare / baostock 编译可能需要）
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc g++ && \
-    rm -rf /var/lib/apt/lists/*
+# 国内服务器构建：换 Debian 源，避免 apt 卡在 deb.debian.org
+RUN sed -i 's|http://deb.debian.org|https://mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+    sed -i 's|http://deb.debian.org|https://mirrors.aliyun.com|g' /etc/apt/sources.list 2>/dev/null || true
 
-# 先装依赖（利用 Docker 缓存层）
+# 多数 Python 包有预编译 wheel，一般不必装 gcc；若 pip 报编译错误再取消下面注释
+# RUN apt-get update && apt-get install -y --no-install-recommends gcc g++ \
+#     && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt \
+    -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-# 复制项目源码
 COPY . .
 
 ENV PYTHONPATH=/app
