@@ -83,6 +83,44 @@ def delete_session(conversation_id: str) -> bool:
         return cur.rowcount > 0
 
 
+def session_status(messages: list[dict[str, Any]]) -> str:
+    """pending = 已有用户提问，尚无对应 assistant 正文回复。"""
+    last_user_idx = -1
+    last_assistant_idx = -1
+    for i, m in enumerate(messages):
+        role = m.get("role")
+        content = (m.get("content") or "").strip()
+        if role == "user" and content:
+            last_user_idx = i
+        elif role == "assistant" and content and not m.get("tool_calls"):
+            last_assistant_idx = i
+    if last_user_idx < 0:
+        return "ready"
+    if last_assistant_idx > last_user_idx:
+        return "ready"
+    return "pending"
+
+
+def ui_messages(conversation_id: str) -> list[dict[str, str]] | None:
+    """Extract user/assistant bubbles for the UI (no system/tool).
+
+    带 tool_calls 的 assistant 消息是调工具前的过程说明，仅用于 LLM 上下文，
+    不应作为聊天气泡展示（否则会与最终报告重复出现）。
+    """
+    raw = load_session(conversation_id)
+    if raw is None:
+        return None
+    ui: list[dict[str, str]] = []
+    for m in raw:
+        role = m.get("role")
+        content = (m.get("content") or "").strip()
+        if role == "user" and content:
+            ui.append({"role": "user", "content": content})
+        elif role == "assistant" and content and not m.get("tool_calls"):
+            ui.append({"role": "assistant", "content": content})
+    return ui
+
+
 def list_sessions() -> list[dict[str, str]]:
     init_db()
     with _connect() as conn:
@@ -96,13 +134,21 @@ def list_sessions() -> list[dict[str, str]]:
     result: list[dict[str, str]] = []
     for row in rows:
         preview = ""
+        status = "ready"
         try:
             msgs = json.loads(row["messages_json"])
+            status = session_status(msgs)
             for m in msgs:
                 if m.get("role") == "user" and m.get("content"):
                     preview = str(m["content"])[:50]
                     break
         except (json.JSONDecodeError, TypeError):
             preview = ""
-        result.append({"conversation_id": row["conversation_id"], "preview": preview})
+        if status == "pending":
+            preview = f"{preview}（生成中…）" if preview else "（生成中…）"
+        result.append({
+            "conversation_id": row["conversation_id"],
+            "preview": preview,
+            "status": status,
+        })
     return result

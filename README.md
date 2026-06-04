@@ -7,7 +7,7 @@
 - **后端**：Python + FastAPI + Function Calling（DeepSeek / OpenAI 兼容）
 - **工具层**：LangChain `@tool` + 12 个领域工具
 - **数据**：akshare、baostock、东方财富（`backend/app/services/fetchers/` 自研）
-- **前端**：Streamlit 多轮对话 UI
+- **前端**：Vue 多轮对话 UI（保留 Streamlit 旧版）
 
 > 本项目为研究辅助工具，不构成任何投资建议。
 
@@ -34,7 +34,7 @@
 用户输入（自然语言）
        │
        ▼
-  Streamlit / REST API
+  Vue / Streamlit / REST API
        │
        ▼
   Agent 循环（最多 6 轮）
@@ -121,6 +121,16 @@ DEEPSEEK_MODEL=deepseek-chat
 # OPENAI_MODEL=gpt-4o-mini
 ```
 
+## 测试
+
+不依赖 DeepSeek API Key 与 akshare 网络，可在项目根目录运行：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest
+```
+
+覆盖：Session 存储、fetcher 工具函数、LLM 配置、FastAPI 路由（LLM 调用已 mock）。
+
 ## 启动
 
 以下命令均在**项目根目录**（含 `README.md`、`backend/` 的目录）执行。
@@ -137,8 +147,8 @@ DEEPSEEK_MODEL=deepseek-chat
 # 终端 1 — 后端
 .\scripts\run_backend.ps1
 
-# 终端 2 — 前端
-.\scripts\run_frontend.ps1
+# 终端 2 — Vue 前端
+.\scripts\run_frontend_vue.ps1
 ```
 
 **手动启动（项目根目录，已激活 `.venv`）：**
@@ -156,15 +166,18 @@ python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8001
 ```
 
 ```bash
-# 终端 2 — 前端（PowerShell / bash 相同）
-streamlit run frontend/streamlit_app.py
+# 终端 2 — Vue 前端
+cd frontend-vue
+npm install
+npm run dev
 ```
 
 访问地址：
 
 - 后端健康检查：http://127.0.0.1:8001/health
 - API 文档：http://127.0.0.1:8001/docs
-- 前端：Streamlit 启动后终端显示的本地地址（通常 http://localhost:8501）
+- Vue 前端：http://localhost:5173
+- Streamlit 旧版：`streamlit run frontend/streamlit_app.py` 后终端显示的本地地址（通常 http://localhost:8501）
 
 ## API 示例
 
@@ -218,8 +231,9 @@ scripts/
   run_backend.ps1
   run_frontend.ps1
   run_all.ps1
-skill/
-  UZI-Skill-3.6.0/            # UZI-Skill 参考拷贝，运行时未接入主应用
+tests/                        # pytest 单元测试与 API 测试
+pytest.ini
+data/                         # SQLite sessions.db（运行时生成，已 gitignore）
 ```
 
 **单独运行 UZI-Skill（可选，与主应用无关）：**

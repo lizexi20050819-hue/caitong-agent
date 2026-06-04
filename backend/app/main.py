@@ -8,8 +8,25 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.app.models import AgentRequest, AgentResponse, ChatRequest, ChatResponse
-from backend.app.services.agent import analyze, start_chat, continue_chat, list_chats, delete_chat
+from backend.app.models import (
+    AgentRequest,
+    AgentResponse,
+    BeginChatResponse,
+    ChatHistoryResponse,
+    ChatMessage,
+    ChatRequest,
+    ChatResponse,
+)
+from backend.app.services.agent import (
+    analyze,
+    begin_chat,
+    continue_chat,
+    delete_chat,
+    get_chat_history,
+    list_chats,
+    run_chat,
+    start_chat,
+)
 
 app = FastAPI(
     title="财通Agent",
@@ -43,17 +60,54 @@ def agent_analyze(request: AgentRequest) -> AgentResponse:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@app.post("/api/chat/start", response_model=ChatResponse)
-def chat_start(request: AgentRequest) -> ChatResponse:
-    """开始新对话 — 返回 conversation_id 用于后续追问。"""
+@app.post("/api/chat/begin", response_model=BeginChatResponse)
+def chat_begin(request: AgentRequest) -> BeginChatResponse:
+    """创建新对话并立即落库，前端可立刻显示在历史侧栏。"""
     try:
-        result = start_chat(request.message)
+        result = begin_chat(request.message)
+        if result.get("error"):
+            raise HTTPException(status_code=400, detail=result["error"])
+        return BeginChatResponse(**result)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/chat/{conv_id}/run", response_model=ChatResponse)
+def chat_run(conv_id: str) -> ChatResponse:
+    """对 pending 会话执行 Agent 并返回最终回复。"""
+    try:
+        result = run_chat(conv_id)
+        if result.get("error"):
+            raise HTTPException(status_code=400, detail=result["error"])
         return ChatResponse(
             response=result["response"],
             conversation_id=result["conversation_id"],
             tools_used=result.get("tools_used", []),
             thinking=result.get("thinking", []),
         )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/chat/start", response_model=ChatResponse)
+def chat_start(request: AgentRequest) -> ChatResponse:
+    """开始新对话（单请求：创建 + 跑 Agent）。兼容 Streamlit。"""
+    try:
+        result = start_chat(request.message)
+        if result.get("error"):
+            raise HTTPException(status_code=400, detail=result["error"])
+        return ChatResponse(
+            response=result["response"],
+            conversation_id=result["conversation_id"],
+            tools_used=result.get("tools_used", []),
+            thinking=result.get("thinking", []),
+        )
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -77,6 +131,20 @@ def chat_continue(request: ChatRequest) -> ChatResponse:
 def chat_list():
     """列出所有活跃对话。"""
     return {"conversations": list_chats()}
+
+
+@app.get("/api/chat/{conv_id}", response_model=ChatHistoryResponse)
+def chat_get(conv_id: str) -> ChatHistoryResponse:
+    """获取对话历史（供前端刷新/重启后恢复界面）。"""
+    data = get_chat_history(conv_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail="对话不存在")
+    return ChatHistoryResponse(
+        conversation_id=data["conversation_id"],
+        preview=data.get("preview", ""),
+        status=data.get("status", "ready"),
+        messages=[ChatMessage(**m) for m in data["messages"]],
+    )
 
 
 @app.delete("/api/chat/{conv_id}")

@@ -43,3 +43,21 @@ class ChatResponse(BaseModel):
     conversation_id: str = ""
     tools_used: list[str] = Field(default_factory=list)
     thinking: list[str] = Field(default_factory=list)
+
+
+class BeginChatResponse(BaseModel):
+    conversation_id: str
+    preview: str = ""
+    status: str = "pending"
+
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+
+class ChatHistoryResponse(BaseModel):
+    conversation_id: str
+    preview: str = ""
+    status: str = "ready"
+    messages: list[ChatMessage] = Field(default_factory=list)

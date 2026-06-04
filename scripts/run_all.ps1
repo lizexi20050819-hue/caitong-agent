@@ -13,5 +13,5 @@ Start-Process powershell -ArgumentList @(
     "-NoExit",
     "-ExecutionPolicy", "Bypass",
     "-Command",
-    "cd `"$projectRoot`"; .\scripts\run_frontend.ps1"
+    "cd `"$projectRoot`"; .\scripts\run_frontend_vue.ps1"
 )
