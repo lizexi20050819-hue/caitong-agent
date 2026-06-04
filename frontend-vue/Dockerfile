@@ -1,7 +1,7 @@
 # ===== 财通Agent 前端 Dockerfile =====
 # 阶段 1：构建 Vue 应用
 
-FROM node:18-alpine AS build
+FROM node:22-alpine AS build
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
