@@ -1,0 +1,23 @@
+# Python
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+
+# 环境 / 数据（运行时卷挂载）
+.env
+data/
+
+# 前端（仅后端构建时忽略）
+frontend-vue/node_modules
+frontend-vue/dist
+
+# Git
+.git
+.gitignore
+
+# 文档 / 杂项
+README.md
+pytest.ini
+skill/
