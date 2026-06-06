@@ -3,14 +3,38 @@
 from __future__ import annotations
 
 from backend.app.services.agent import (
+    OFF_TOPIC_REPLY,
     _append_assistant_reply,
     _execute_tools,
     begin_chat,
     get_chat_history,
+    off_topic_reply,
     run_chat,
 )
 from backend.app.services import session_store
-from backend.app.services import session_store
+
+
+def test_off_topic_reply_blocks_weather():
+    assert off_topic_reply("今天北京天气怎么样") == OFF_TOPIC_REPLY
+
+
+def test_off_topic_reply_allows_stock_question():
+    assert off_topic_reply("分析一下贵州茅台") is None
+    assert off_topic_reply("600519 北向资金怎么看") is None
+
+
+def test_off_topic_reply_allows_short_followup_in_context():
+    assert off_topic_reply("北向呢？", has_stock_context=True) is None
+
+
+def test_run_chat_refuses_off_topic_without_llm(temp_db):
+    begun = begin_chat("讲个笑话")
+    result = run_chat(begun["conversation_id"])
+    assert result["response"] == OFF_TOPIC_REPLY
+    assert result["tools_used"] == []
+    loaded = session_store.load_session(begun["conversation_id"])
+    assert loaded[-1]["role"] == "assistant"
+    assert loaded[-1]["content"] == OFF_TOPIC_REPLY
 
 
 def test_begin_chat_saves_pending_session(temp_db):
