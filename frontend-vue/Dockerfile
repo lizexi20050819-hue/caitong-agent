@@ -1,9 +1,15 @@
+# ===== 财通Agent 前端 Dockerfile =====
 
-FROM python:3.11-slim-bookworm
+FROM node:22-alpine AS build
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+RUN npm config set registry https://registry.npmmirror.com
+COPY package*.json ./
+RUN npm ci
 COPY . .
-ENV PYTHONPATH=/app
-EXPOSE 8001
-CMD ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8001"]
+RUN npm run build
+
+FROM nginx:alpine
+COPY --from=build /app/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
