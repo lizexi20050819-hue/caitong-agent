@@ -1,70 +1,67 @@
 # 财通Agent — A 股 LLM 投研助手
 
-自研的 **LLM Agent** 项目：用户用自然语言提问，Agent 自主编排工具拉取真实数据，并支持多轮追问。
+自研 **LLM Agent**：用户用自然语言提问，Agent 自主编排工具拉取真实数据，支持多轮追问，输出 Markdown 研报式结论。
 
-投研维度与数据 fetcher 设计**参考**开源项目 [UZI-Skill](https://github.com/wbh604/UZI-Skill)，但主应用为独立实现的 Web Agent，**运行时不会调用** `skill/` 目录中的代码。
+投研维度与 fetcher 设计**参考** [UZI-Skill](https://github.com/wbh604/UZI-Skill)，主应用独立实现，**运行时不会调用** `skill/` 目录。
 
-- **后端**：Python + FastAPI + Function Calling（DeepSeek / OpenAI 兼容）
-- **工具层**：LangChain `@tool` + 12 个领域工具
-- **数据**：akshare、baostock、东方财富（`backend/app/services/fetchers/` 自研）
-- **前端**：Vue 多轮对话 UI（保留 Streamlit 旧版）
+| 层级 | 技术 |
+|------|------|
+| 后端 | Python 3.11 + FastAPI + Function Calling（DeepSeek / OpenAI 兼容） |
+| 工具层 | LangChain `@tool`，12 个领域工具 |
+| 数据 | akshare、baostock、东方财富（`backend/app/services/fetchers/`） |
+| 前端 | **Vue 3 + Vite**（主）；Streamlit（旧版保留） |
+| 会话 | SQLite（`data/sessions.db`），按访客 Cookie 隔离 |
 
 > 本项目为研究辅助工具，不构成任何投资建议。
 
-## 与 UZI-Skill 的关系
-
-| | 财通Agent（主应用） | UZI-Skill（`skill/UZI-Skill-3.6.0/`） |
-|---|---|---|
-| 定位 | Web 版 LLM Agent | Cursor / Claude 等 IDE 用的独立技能包 |
-| 架构 | Function Calling + 多轮对话 | 固定 Pipeline + Agent role-play |
-| 入口 | FastAPI / Streamlit | `python run.py 600519` |
-| 投资人评审 | 8 位 persona | 51 位 persona + 7 大流派 |
-| 输出 | 对话文本结论 | 自包含 HTML 研报 |
-| 运行时集成 | — | **未接入**，无 import / subprocess 调用 |
-
-**借鉴了什么：** 多维度 A 股数据采集思路、fetcher 维度划分、akshare 数据源选型、投资人 persona 评审概念。
-
-**没有集成什么：** UZI 的 22 维 pipeline、51 评委系统、HTML 报告生成、`run.py` 工作流。
-
-仓库中的 `skill/UZI-Skill-3.6.0/` 是 UZI-Skill v3.6.0 的完整参考拷贝，可单独运行对照，与财通Agent 后端互不依赖。
+---
 
 ## 架构概览
 
 ```text
-用户输入（自然语言）
+用户浏览器（Vue SPA）
+       │  /api/* 同源（开发：Vite proxy；生产：Nginx 反代）
+       ▼
+  FastAPI 后端 :8001
        │
        ▼
-  Vue / Streamlit / REST API
-       │
-       ▼
-  Agent 循环（最多 6 轮）
+  Agent 循环（首轮最多 6 轮，追问 4 轮）
   ┌────────────────────────────┐
   │  LLM 推理 → 选择工具       │
   │       ↓                    │
-  │  执行工具 → 返回结构化数据  │
+  │  执行工具 → 结构化数据     │
   │       ↓                    │
-  │  LLM 综合 → 输出结论       │
+  │  LLM 综合 → Markdown 结论  │
   └────────────────────────────┘
        │
        ▼
-  多轮对话（SQLite Session 持久化）
+  SQLite（conversation_id + visitor_id）
 ```
 
 **Agent 能力：**
 
-- 名称/简称 → 代码解析（5000+ 个股、26000+ 基金）
-- 个股分析：行情、财务、估值分位、行业、北向资金、研报、龙虎榜
-- ETF 分析：实时行情、折溢价、持仓穿透、收益表现
+- 名称/简称 → 代码解析（个股 / 场内基金）
+- 个股：行情、财务、估值分位、行业、北向资金、研报、龙虎榜
+- ETF：折溢价、持仓穿透、收益表现
 - 投资人评审：巴菲特、格雷厄姆、段永平、彼得林奇、张坤、赵老哥、利弗莫尔、达里奥
-- 多轮追问：如「北向资金呢？」「估值贵不贵？」，基于上下文增量回答
+- 多轮追问：基于上下文增量回答，不重复整篇报告
 
-## 功能
+---
 
-| 模式 | 说明 |
-|------|------|
-| 一次性分析 | `POST /api/analyze`，输入一句话，Agent 自动找代码、调工具、出报告 |
-| 多轮对话 | `POST /api/chat/start` + `/api/chat/continue`，支持追问，Agent 记住上下文 |
-| 工具链可视化 | 前端展示调用了哪些工具及思考过程 |
+## 功能与 API
+
+| 模式 | 接口 | 说明 |
+|------|------|------|
+| 一次性分析 | `POST /api/analyze` | 单轮完整分析 |
+| 多轮（Vue 推荐） | `POST /api/chat/begin` → `POST /api/chat/{id}/run` | 先发问落库，再跑 Agent；侧栏即时显示「生成中…」 |
+| 多轮（单请求） | `POST /api/chat/start` | 创建 + 跑 Agent 一步完成（Streamlit 兼容） |
+| 追问 | `POST /api/chat/continue` | 传入 `conversation_id` |
+| 历史列表 | `GET /api/chat/list` | **仅当前访客**的对话 |
+| 加载历史 | `GET /api/chat/{id}` | 含 `status`: `pending` / `ready` |
+| 删除 | `DELETE /api/chat/{id}` | |
+| 健康检查 | `GET /health` | |
+
+**访客隔离：** 后端通过 `HttpOnly` Cookie `visitor_id` 区分浏览器；列表/读写/删除均带 `visitor_id` 过滤。换浏览器或清 Cookie 后看不到旧对话。
 
 **输入示例：**
 
@@ -72,299 +69,258 @@
 - `沪深300ETF 值得买吗`
 - `600519 北向资金怎么看`（追问）
 
-## 环境要求
+---
+
+## 本地开发
+
+### 环境要求
 
 - Python 3.10+
-- 已创建虚拟环境 `.venv`（启动脚本默认使用）
-- **必须配置 LLM API Key**（DeepSeek 或 OpenAI），Agent 核心能力依赖大模型
+- Node.js 18+（Vue 前端）
+- **必须配置 LLM API Key**
 
-## 安装
-
-**1. 克隆仓库并进入项目目录**
+### 安装
 
 ```powershell
 git clone https://github.com/lizexi20050819-hue/caitong-agent.git
 cd caitong-agent
-```
 
-若已下载 ZIP，解压后在该文件夹内打开终端即可，无需 `git clone`。
-
-**2. 创建虚拟环境并安装依赖（Windows PowerShell）**
-
-```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
+pip install -r requirements.txt
 copy .env.example .env
 ```
 
-**macOS / Linux：**
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-```
-
-编辑 `.env`，至少配置一种 LLM：
+编辑 `.env`（至少一种 LLM）：
 
 ```env
-# 推荐：DeepSeek
 LLM_PROVIDER=deepseek
-DEEPSEEK_API_KEY=你的 key
+DEEPSEEK_API_KEY=你的key
 DEEPSEEK_MODEL=deepseek-chat
-
-# 或使用 OpenAI 兼容 API
-# LLM_PROVIDER=openai
-# OPENAI_API_KEY=你的 key
-# OPENAI_MODEL=gpt-4o-mini
 ```
 
-## 测试
+Vue 依赖：
 
-不依赖 DeepSeek API Key 与 akshare 网络，可在项目根目录运行：
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest
+```bash
+cd frontend-vue
+npm install
 ```
 
-覆盖：Session 存储、fetcher 工具函数、LLM 配置、FastAPI 路由（LLM 调用已 mock）。
+### 启动
 
-## 启动
-
-以下命令均在**项目根目录**（含 `README.md`、`backend/` 的目录）执行。
-
-**方式一：一键启动前后端（Windows）**
+**一键（Windows）：**
 
 ```powershell
 .\scripts\run_all.ps1
 ```
 
-**方式二：分别启动（Windows）**
+**分别启动：**
 
 ```powershell
 # 终端 1 — 后端
 .\scripts\run_backend.ps1
 
-# 终端 2 — Vue 前端
+# 终端 2 — Vue
 .\scripts\run_frontend_vue.ps1
 ```
 
-**手动启动（项目根目录，已激活 `.venv`）：**
+**手动：**
 
 ```powershell
-# 终端 1 — 后端（PowerShell）
 $env:PYTHONPATH = (Get-Location).Path
 python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8001
 ```
 
 ```bash
-# 终端 1 — 后端（bash）
-export PYTHONPATH="$PWD"
-python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8001
+cd frontend-vue && npm run dev
 ```
 
-```bash
-# 终端 2 — Vue 前端
-cd frontend-vue
-npm install
-npm run dev
-```
+| 地址 | 用途 |
+|------|------|
+| http://localhost:5173 | Vue 前端 |
+| http://127.0.0.1:8001/health | 健康检查 |
+| http://127.0.0.1:8001/docs | Swagger API 文档 |
 
-访问地址：
+Streamlit 旧版：`streamlit run frontend/streamlit_app.py`（通常 http://localhost:8501）
 
-- 后端健康检查：http://127.0.0.1:8001/health
-- API 文档：http://127.0.0.1:8001/docs
-- Vue 前端：http://localhost:5173
-- Streamlit 旧版：`streamlit run frontend/streamlit_app.py` 后终端显示的本地地址（通常 http://localhost:8501）
-
-## API 示例
-
-**一次性分析：**
+### 测试
 
 ```powershell
-Invoke-RestMethod `
-  -Uri "http://127.0.0.1:8001/api/analyze" `
-  -Method Post `
-  -ContentType "application/json" `
-  -Body '{"message":"分析一下贵州茅台"}'
+.\.venv\Scripts\python.exe -m pytest
 ```
 
-**开始多轮对话：**
+覆盖 Session、fetcher、LLM 配置、FastAPI 路由（LLM 已 mock）。
 
-```powershell
-Invoke-RestMethod `
-  -Uri "http://127.0.0.1:8001/api/chat/start" `
-  -Method Post `
-  -ContentType "application/json" `
-  -Body '{"message":"分析一下贵州茅台"}'
-```
-
-**继续追问（使用上一步返回的 conversation_id）：**
-
-```powershell
-Invoke-RestMethod `
-  -Uri "http://127.0.0.1:8001/api/chat/continue" `
-  -Method Post `
-  -ContentType "application/json" `
-  -Body '{"conversation_id":"abc12345","message":"北向资金呢？"}'
-```
+---
 
 ## 项目结构
 
 ```text
-backend/
-  app/
-    main.py                   # FastAPI 入口，/api/analyze 与 /api/chat/*
-    models.py                 # Pydantic 请求/响应模型
-    services/
-      agent.py                # Agent 主循环（Function Calling + 多轮记忆）
-      session_store.py        # SQLite 多轮对话持久化
-      tools.py                # 12 个 LangChain 工具 + OpenAI schema
-      llm.py                  # LLM 配置加载（DeepSeek / OpenAI）
-      market_data.py          # A 股行情（baostock + 东方财富）
-      fetchers/               # 财务、估值、行业、资金、研报、龙虎榜等
+backend/app/
+  main.py                 # FastAPI 路由、visitor Cookie
+  models.py               # Pydantic 模型
+  services/
+    agent.py              # Agent 主循环、begin/run/start/continue
+    session_store.py      # SQLite 持久化、visitor_id 隔离
+    tools.py              # 12 个 LangChain 工具
+    llm.py                # DeepSeek / OpenAI 配置
+    market_data.py        # 行情
+    fetchers/             # 财务、估值、行业、资金、研报等
+
+frontend-vue/             # Vue 3 主前端
+  src/App.vue             # 多轮对话 UI
+  src/components/MarkdownContent.vue
+  src/utils/markdown.js   # Markdown 渲染、综合评分置顶
+  Dockerfile              # Node 构建 + Nginx
+  nginx.conf              # 静态资源 + /api 反代
+
 frontend/
-  streamlit_app.py            # Streamlit 多轮对话前端
+  streamlit_app.py        # Streamlit 旧前端
+
+Dockerfile                # 后端镜像（Python + uvicorn）
+docker-compose.yml        # 前后端编排，对外 80 端口
 scripts/
+  run_all.ps1             # 一键启动后端 + Vue
   run_backend.ps1
-  run_frontend.ps1
-  run_all.ps1
-tests/                        # pytest 单元测试与 API 测试
-pytest.ini
-data/                         # SQLite sessions.db（运行时生成，已 gitignore）
+  run_frontend_vue.ps1
+  run_frontend.ps1        # Streamlit
+
+tests/                    # pytest
+data/                     # sessions.db（运行时生成，gitignore）
+.github/workflows/deploy.yml
 ```
 
-**单独运行 UZI-Skill（可选，与主应用无关）：**
-
-本仓库未包含 `skill/` 目录，需自行克隆 [UZI-Skill](https://github.com/wbh604/UZI-Skill)：
-
-```powershell
-git clone https://github.com/wbh604/UZI-Skill.git
-cd UZI-Skill
-pip install -r requirements.txt
-python run.py 600519
-```
+---
 
 ## Agent 工具列表
 
 | 工具 | 用途 |
 |------|------|
-| `resolve_stock_code` | 名称/简称 → 6 位代码，区分 stock / fund |
+| `resolve_stock_code` | 名称/简称 → 代码，区分 stock / fund |
 | `get_market_data` | 实时行情、PE、PB |
-| `get_financials` | ROE、利润率、负债率、分红等 |
+| `get_financials` | ROE、利润率、负债率、分红 |
 | `get_valuation` | PE/PB 5 年历史分位 |
-| `get_industry` | 行业分类、景气度、市值排名 |
-| `get_capital_flow` | 北向资金、大宗交易、限售解禁 |
-| `get_research` | 券商研报共识、盈利预测 |
-| `get_lhb_data` | 龙虎榜、机构 vs 游资 |
-| `get_etf_info` | ETF 实时价、折溢价、规模 |
-| `get_etf_holdings` | ETF 前十大持仓、行业分布 |
-| `get_etf_performance` | ETF 近期收益、波动率 |
-| `role_play_investor` | 知名投资人 persona 评审 |
+| `get_industry` | 行业分类、景气度 |
+| `get_capital_flow` | 北向资金、大宗交易 |
+| `get_research` | 券商研报共识 |
+| `get_lhb_data` | 龙虎榜 |
+| `get_etf_info` | ETF 价、折溢价 |
+| `get_etf_holdings` | 持仓穿透 |
+| `get_etf_performance` | 收益、波动 |
+| `role_play_investor` | 投资人 persona 评审 |
 
-## 上线部署（Docker，推荐）
+---
 
-项目已包含 `Dockerfile`、`frontend-vue/Dockerfile`、`docker-compose.yml`。对外只暴露 **80 端口**（Nginx 托管 Vue + 反向代理 `/api` 到后端）。
+## 上线部署（Docker）
 
-### 1. 准备一台 Linux 服务器
+两个 Dockerfile 分工：
 
-- 建议：2 核 4G 内存以上（akshare / pandas 较吃资源）
-- 系统：Ubuntu 22.04 / Debian 12 等
-- 安装 Docker 与 Docker Compose v2
+| 文件 | 构建 |
+|------|------|
+| 根目录 `Dockerfile` | 后端 `caitong-backend`（pip 清华源，无 apt） |
+| `frontend-vue/Dockerfile` | 前端 `caitong-frontend`（npm 构建 + Nginx） |
 
-```bash
-# Ubuntu 示例
-sudo apt update && sudo apt install -y git docker.io docker-compose-v2
-sudo usermod -aG docker $USER
-# 重新登录后生效
-```
+`docker-compose.yml` 只对外暴露 **80**；Nginx 托管 Vue 并将 `/api`、`/health` 反代到后端内网。
 
-### 2. 首次部署（手动）
+### 首次部署
 
 ```bash
 git clone https://github.com/lizexi20050819-hue/caitong-agent.git
 cd caitong-agent
 
 cp .env.example .env
-# 编辑 .env，至少填写 DEEPSEEK_API_KEY（或 OPENAI_API_KEY）
-nano .env
+nano .env          # 填写 DEEPSEEK_API_KEY 等
 
-mkdir -p data   # SQLite 会话库持久化目录
-
+mkdir -p data
 docker compose up -d --build
-docker compose ps
 ```
 
-浏览器访问：`http://你的服务器IP`（或绑定域名后访问域名）。
+云厂商安全组放行 **TCP 80**，浏览器访问 `http://公网IP`。
 
-健康检查：`http://你的服务器IP/health` 应返回 `{"status":"ok"}`。
-
-### 3. 环境变量（`.env`）
+### 环境变量
 
 | 变量 | 说明 |
 |------|------|
 | `LLM_PROVIDER` | `deepseek` 或 `openai` |
-| `DEEPSEEK_API_KEY` | DeepSeek Key（上线必填其一） |
-| `OPENAI_API_KEY` | OpenAI 兼容 Key |
-| `SESSION_DB_PATH` | compose 已映射到 `/app/data/sessions.db`，一般不用改 |
+| `DEEPSEEK_API_KEY` | 必填其一 |
+| `SESSION_DB_PATH` | compose 已映射 `./data/sessions.db` |
 
-**切勿**把 `.env` 提交到 Git；Key 只放在服务器本地。
+**切勿**将 `.env` 提交 Git。
 
-### 4. 自动部署（GitHub Actions）
-
-推送 `main` 分支可触发 `.github/workflows/deploy.yml`（需先在仓库 Settings → Secrets 配置）：
-
-| Secret | 说明 |
-|--------|------|
-| `SERVER_HOST` | 服务器 IP 或域名 |
-| `SERVER_USER` | SSH 用户名 |
-| `SERVER_SSH_KEY` | SSH 私钥 |
-| `LLM_PROVIDER` | 同 `.env` |
-| `DEEPSEEK_API_KEY` | 同 `.env` |
-| `DEEPSEEK_MODEL` | 可选 |
-
-服务器上需**先手动** `git clone` 到 `/home/<用户>/caitong-agent`（路径与 workflow 中一致），之后每次 push `main` 会自动 `git pull` + `docker compose up -d --build`。
-
-### 5. HTTPS（可选，建议）
-
-compose 默认 HTTP 80。生产环境建议：
-
-- 用 **Nginx / Caddy** 在宿主机做 443 终止，反代到 `127.0.0.1:80`；或
-- 域名接入 **Cloudflare** 开启 HTTPS
-
-### 6. 运维常用命令
+### 代码更新
 
 ```bash
-docker compose logs -f backend    # 看后端日志
-docker compose logs -f frontend
-docker compose restart backend
-docker compose down && docker compose up -d --build   # 更新代码后重建
+# 本机：git push 后，在服务器
+cd ~/caitong-agent
+git pull
+docker compose up -d --build
 ```
 
-`data/sessions.db` 在宿主机 `./data/` 目录，备份该目录即可保留历史对话。
+仅改 `.env`：`docker compose restart backend`
 
-### 7. 上线前检查清单
+### 运维
 
-- [ ] `.env` 中 LLM Key 已配置且有效
-- [ ] 服务器能访问外网（DeepSeek API、akshare 数据源）
-- [ ] 安全组 / 防火墙放行 80（若用 HTTPS 再放行 443）
-- [ ] 本地 `docker compose up -d --build` 能跑通再推到服务器
-- [ ] 跑一遍 `pytest` 确保无回归
+```bash
+docker compose ps
+docker compose logs -f backend
+curl -s http://127.0.0.1/health
+```
+
+对话数据：`./data/sessions.db`（备份 `data/` 目录即可）。
+
+### 自动部署（可选）
+
+推送 `main` 触发 `.github/workflows/deploy.yml`，需在 GitHub Secrets 配置 `SERVER_HOST`、`SERVER_USER`、`SERVER_SSH_KEY`、`DEEPSEEK_API_KEY` 等；服务器需先 `git clone` 到 `/home/<用户>/caitong-agent`。
+
+### HTTPS（建议）
+
+宿主机 Nginx/Caddy 做 443 终止，或 Cloudflare 代理。
+
+### 常见构建问题
+
+| 现象 | 处理 |
+|------|------|
+| 卡在 `deb.debian.org` / `apt-get` | 使用当前 Dockerfile（无 apt）；`docker compose build --no-cache` |
+| 卡在 `resolving provenance` | compose 已设 `provenance: false`；或 `export BUILDX_NO_DEFAULT_ATTESTATIONS=1` |
+| `ENV requires at least one argument` | Dockerfile 粘贴损坏，用 `cat > Dockerfile << 'EOF'` 重写 |
+| 外网打不开 | 安全组访问来源填 `0.0.0.0/0`，端口 **80**（勿全开 1-65535） |
+| 服务器改了文件与 GitHub 不一致 | 以 GitHub 为准：本地改 → push → 服务器 pull |
+
+---
+
+## 会话与隐私
+
+- 对话存入服务器 `data/sessions.db`，重启容器不丢失（volume 挂载）。
+- 每个浏览器通过 `visitor_id` Cookie 隔离历史；**不同访客互不可见**。
+- 清 Cookie / 换浏览器 = 新访客，无法找回旧列表。
+- 无账号登录；公开商用建议后续加正式用户体系。
+
+---
+
+## 与 UZI-Skill 的关系
+
+| | 财通Agent | UZI-Skill |
+|--|-----------|-----------|
+| 定位 | Web LLM Agent | IDE 技能包 |
+| 架构 | Function Calling + 多轮 | 固定 Pipeline |
+| 投资人 | 8 位 persona | 51 位 |
+| 输出 | 对话 Markdown | HTML 研报 |
+| 集成 | — | **未接入** |
+
+仓库可不包含 `skill/`；需对照时自行 clone [UZI-Skill](https://github.com/wbh604/UZI-Skill)。
+
+---
 
 ## 已知限制
 
-- 多轮对话 Session 存于 SQLite（`data/sessions.db`），重启后端不丢失；多进程部署需改 Redis
-- 主要覆盖 **A 股个股与场内 ETF**，暂不支持港股/美股完整分析链路
-- 部分数据源（akshare / 东方财富）可能受网络环境影响
-- 投资人 persona 目前为 8 位（UZI-Skill 参考包中有 51 位，未接入主应用）
+- SQLite 适合单机；多实例需 Redis 等共享存储
+- 主要覆盖 **A 股个股与场内 ETF**
+- akshare / 东方财富受网络环境影响
+- 长分析可能数分钟，Nginx `proxy_read_timeout` 已设 300s
 
-## 后续可扩展方向
+## 后续方向
 
-- Redis 多实例 Session 共享
-- 异步任务队列与长分析进度推送
-- 扩展更多投资人 persona 与流派评分
-- 生成自包含 HTML 研报
-- 单元测试与 CI
-- 更严格的数据缺口校验与自查 Gate
+- 正式用户登录与跨设备同步
+- 异步任务 + 分析进度推送
+- 更多投资人 persona
+- 自包含 HTML 研报导出
