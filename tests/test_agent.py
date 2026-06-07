@@ -7,6 +7,8 @@ from unittest.mock import patch
 from backend.app.services.agent import (
     OFF_TOPIC_REPLY,
     _append_assistant_reply,
+    _build_compaction_summary,
+    _compact_context,
     _execute_tools,
     _needs_plan,
     _verify_conclusion,
@@ -201,3 +203,94 @@ def test_verify_conclusion_empty_llm_response_falls_back():
     with patch("backend.app.services.agent._call_llm", return_value=mock_response):
         result = _verify_conclusion(messages, "原始草稿")
         assert result == "原始草稿"
+
+
+# ── context compaction tests ──
+
+
+def _make_tool_round(round_num: int) -> list[dict]:
+    """Helper: 创建一轮工具调用的消息（assistant tool_calls + tool result）。"""
+    return [
+        {
+            "role": "assistant",
+            "content": f"推理{round_num}",
+            "tool_calls": [{
+                "id": f"tc{round_num}",
+                "function": {"name": f"tool{round_num}", "arguments": "{}"},
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": f"tc{round_num}",
+            "content": f'{{"data{round_num}": {round_num * 100}}}',
+        },
+    ]
+
+
+def test_compact_context_skips_when_under_threshold():
+    """工具轮次不足时不触发压缩"""
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "分析茅台"},
+        *_make_tool_round(1),
+        {"role": "assistant", "content": "结论"},
+    ]
+    result, compacted = _compact_context(messages, max_tool_rounds=3)
+    assert compacted is False
+    assert result is messages  # 相同引用，未修改
+
+
+def test_compact_context_triggers_when_over_threshold():
+    """超过阈值时压缩早期轮次"""
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "分析茅台"},
+        *_make_tool_round(1),
+        *_make_tool_round(2),
+        {"role": "assistant", "content": "第一轮结论"},
+        {"role": "user", "content": "北向呢？"},
+        *_make_tool_round(3),
+        {"role": "assistant", "content": "北向结论"},
+        {"role": "user", "content": "比亚迪呢？"},
+        *_make_tool_round(4),
+    ]
+    mock_summary = {"choices": [{"message": {"content": "茅台PE19倍，北向6.55%"}}]}
+
+    with patch("backend.app.services.agent._call_llm", return_value=mock_summary):
+        result, compacted = _compact_context(messages, max_tool_rounds=2)
+
+    assert compacted is True
+    # 重建后应包含 system + summary user + ack assistant + 最近 2 轮
+    assert result[0] == messages[0]  # system 保留
+    assert "上下文摘要" in result[1]["content"]
+    assert "茅台PE19倍" in result[1]["content"]
+    assert result[2]["role"] == "assistant"
+    # 最近 2 轮的工具调用应该还在
+    tool_rounds_in_result = sum(
+        1 for m in result if m.get("role") == "assistant" and m.get("tool_calls")
+    )
+    assert tool_rounds_in_result == 2
+
+
+def test_build_compaction_summary_empty():
+    """空消息返回兜底文案"""
+    assert "无工具数据" in _build_compaction_summary([])
+
+
+def test_compact_context_preserves_system_prompt():
+    """没有 system 消息时也能正常工作"""
+    messages = [
+        {"role": "user", "content": "分析茅台"},
+        *_make_tool_round(1),
+        *_make_tool_round(2),
+        *_make_tool_round(3),
+        *_make_tool_round(4),
+    ]
+    mock_summary = {"choices": [{"message": {"content": "摘要"}}]}
+
+    with patch("backend.app.services.agent._call_llm", return_value=mock_summary):
+        result, compacted = _compact_context(messages, max_tool_rounds=2)
+
+    assert compacted is True
+    assert result[0]["role"] == "user"
+    assert "上下文摘要" in result[0]["content"]

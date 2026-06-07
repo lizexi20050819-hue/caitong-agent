@@ -204,6 +204,88 @@ def _create_plan(messages: list[dict[str, Any]]) -> tuple[list[str], str]:
         return [], ""
     return [f"📋 计划\n{plan}"], plan
 
+
+def _compact_context(
+    messages: list[dict[str, Any]],
+    max_tool_rounds: int = 3,
+) -> tuple[list[dict[str, Any]], bool]:
+    """将早期工具调用结果压缩为 LLM 摘要，保留最近 N 轮完整上下文。
+
+    Returns (messages, compacted).
+    """
+    # 找到所有带 tool_calls 的 assistant 消息位置（每轮工具调用的起点）
+    tool_round_starts = [
+        i for i, m in enumerate(messages)
+        if m.get("role") == "assistant" and m.get("tool_calls")
+    ]
+
+    if len(tool_round_starts) <= max_tool_rounds:
+        return messages, False
+
+    # 保留最近 max_tool_rounds 轮，压缩更早的内容
+    cut_idx = tool_round_starts[-max_tool_rounds]
+
+    system_msg = messages[0] if messages and messages[0].get("role") == "system" else None
+    old_section = messages[1:cut_idx] if system_msg else messages[:cut_idx]
+    recent_section = messages[cut_idx:]
+
+    summary = _build_compaction_summary(old_section)
+
+    rebuilt: list[dict[str, Any]] = []
+    if system_msg:
+        rebuilt.append(system_msg)
+    rebuilt.append({
+        "role": "user",
+        "content": f"【上下文摘要 — 此前对话中已获取的数据】\n{summary}",
+    })
+    rebuilt.append({
+        "role": "assistant",
+        "content": "好的，我已了解此前获取的所有数据。请继续分析。",
+    })
+    rebuilt.extend(recent_section)
+
+    return rebuilt, True
+
+
+def _build_compaction_summary(old_messages: list[dict[str, Any]]) -> str:
+    """Extract key data from old messages via lightweight LLM summarization."""
+    user_questions: list[str] = []
+    tool_snippets: list[str] = []
+
+    for m in old_messages:
+        if m.get("role") == "user":
+            content = (m.get("content") or "").strip()
+            if content and len(content) > 2:
+                user_questions.append(content[:120])
+        elif m.get("role") == "tool":
+            content = (m.get("content") or "").strip()
+            if content:
+                tool_snippets.append(content[:400])
+
+    if not tool_snippets:
+        return "此前无工具数据。"
+
+    q_text = " | ".join(user_questions[-5:])
+    t_text = "\n---\n".join(tool_snippets[-8:])
+
+    summary_prompt = (
+        "请用 200 字以内总结以下数据中的关键信息，只提取核心数字和结论，禁止编造：\n\n"
+        f"用户曾问：{q_text}\n\n"
+        f"工具返回数据（节选）：\n{t_text}"
+    )
+
+    try:
+        response = _call_llm(
+            [{"role": "user", "content": summary_prompt}],
+            tools=None,
+        )
+        summary = (response["choices"][0]["message"].get("content") or "").strip()
+        return summary if summary else "此前已获取相关数据，详见后续分析。"
+    except Exception:
+        logger.warning("Compaction summary call failed")
+        return "此前已获取相关数据（摘要生成失败）。"
+
+
 def _verify_conclusion(messages: list[dict], draft: str) -> str:
     """Self-reflection pass: review data sufficiency, consistency, and scoring."""
     if not draft or not draft.strip():
@@ -357,6 +439,12 @@ def _run_chat_loop(
     """Run agent on in-memory messages; persist when a final assistant reply is ready."""
     thinking: list[str] = []
     tools_used: list[str] = []
+
+    # 多轮追问时压缩早期工具结果，控制上下文窗口
+    messages, compacted = _compact_context(messages)
+    if compacted:
+        thinking.append("📦 上下文压缩：已将早期对话数据提炼为摘要，保留最近几轮完整结果")
+        save_session(conv_id, messages, visitor_id)
 
     plan_hint = ""
     if _needs_plan(messages):
