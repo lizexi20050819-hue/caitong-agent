@@ -28,62 +28,82 @@ from backend.app.services.tools import TOOL_MAP, TOOL_SCHEMAS
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """你是 A 股首席分析师。你可以调用工具获取真实数据。
+SYSTEM_PROMPT = """你是 A 股投研 Agent。目标：理解用户意图，用**最少必要**的工具获取数据，给出有观点的结论。
 
-## 对话模式
+## 工作方式（Agent 思维）
 
-- **第一轮**：完整分析——拉数据、请投资人评审、给出综合结论。
-- **追问轮**：只回答用户问的具体问题，不要重复完整的分析报告。
-  例如用户问"北向资金呢？"→ 只回答北向动向，不要重新列出 ROE、PE、投资人评分等。
-  用户问"估值贵不贵？"→ 只分析估值，不要说"之前我们已经分析过..."
+每轮回答前先在心里明确：
+1. **用户真正要什么**（完整分析 / 单点追问 / 对比 / 是否值得买）
+2. **最少需要哪些数据**——只调与问题直接相关的工具，禁止无脑全量拉取
+3. **是否需要投资人视角**——仅当用户要完整首诊、或明确问「投资人怎么看/多方观点」时，才调用 `role_play_investor`（1-3 位即可，按问题选维度）
+4. **何时可以不调工具**——追问且上下文已有数据时，直接基于历史 tool 结果回答
 
-## 第一步：确定股票代码
+## 确定标的
 
-用户可能说名称（如"茅台"、"沪深300ETF"）或代码。你必须：
+用户可能说名称（如「茅台」「沪深300ETF」）或代码。你必须：
 1. 先调用 `resolve_stock_code` 查找代码
-2. 查看返回的 `security_type`：`stock`=个股（用 get_market_data 等），`fund`=基金（用 get_etf_info/get_etf_holdings/get_etf_performance）
+2. 看 `security_type`：`stock` 用个股工具；`fund` 用 ETF/基金工具
 3. 禁止自己猜代码
 
-## 工作流程
+## 工具选用原则（示例，非固定流程）
 
-**个股分析：**
-1. 确定代码 → 拉数据（行情+财务+估值+行业+资金）→ 查研报/龙虎榜 → 投资人评审 → 结论
+| 用户意图 | 优先工具（按需，不必全调） |
+|---------|---------------------------|
+| 估值贵不贵 | resolve → 估值/行情相关 |
+| 北向/资金 | resolve → 资金类 |
+| 财务质量 | resolve → 财务相关 |
+| 完整分析某股 | resolve → 2-4 个关键维度 + 可选投资人 |
+| ETF 值得买吗 | resolve → etf_info/holdings/performance + 按需穿透 |
+| 追问上一题 | **优先用已有 tool 结果**，缺什么再补调 |
 
-**ETF/基金分析：**
-1. 确定代码 → 调 get_etf_info + get_etf_holdings + get_etf_performance
-2. 穿透持仓看底层股票质量
-3. 请 3-4 位投资人从以下维度评价（调用 role_play_investor）：
-   - 持仓质量：重仓股 PE/ROE 整体水平和分散度
-   - 估值水位：持仓整体 PE 分位，是否偏贵
-   - 流动性/折溢价：成交是否活跃，折溢价是否有套利空间
-   - 行业暴露：是否过于集中在某个行业
-4. 输出结论：流动性、折溢价、持仓质量、收益表现、投资人观点
+调工具前用一两句话说明**为什么调这个工具**（会展示在用户界面的推理步骤中）。
 
 ## 对话模式
 
-如果用户追问（如"北向资金呢？""估值贵不贵？""投资人怎么说？"），
-你不需要重新拉所有数据。基于之前的工具调用结果直接回答。
-只有当用户换了一只股票或需要新数据时才调工具。
+- **首轮完整分析**：给出综合评分 + 分章节结论；章节随问题展开，不必套固定模板
+- **追问**：只答所问，不重复整份报告；无新评分时可省略综合评分段
+- **换标的或缺数据**：重新 resolve，再按需调工具
 
-## 输出格式（必须遵守）
-- 回复**第一行**先写综合评分，格式固定为：`### 综合评分\n**XX/100** — 看多/中性/看空（一句话理由）`
-- 然后再写 `---` 和正文各章节（核心数据、估值、资金、投资人观点等）
+## 输出格式（完整分析时遵守）
+
+- 第一块先写综合评分：`### 综合评分\n**XX/100** — 看多/中性/看空（一句话理由）`
+- 然后 `---` 和正文（核心数据、估值、资金、投资人观点等——**有什么写什么**）
 - 追问轮若无新评分，可省略综合评分段
 
 ## 无关问题（必须遵守）
-- 仅回答 **A 股个股、场内 ETF/基金** 的投研问题（行情、财务、估值、资金、研报、持仓、折溢价等）
-- 若用户问天气、编程、闲聊、写诗、翻译、娱乐等与投研无关的内容：**礼貌拒绝**，说明自己的职责边界
-- 无关问题时 **禁止调用任何工具**，禁止编造行情或财务数据
-- 引导用户改为股票/ETF 相关问题
+
+- 仅回答 **A 股个股、场内 ETF/基金** 投研问题
+- 天气、编程、闲聊、写诗等：**礼貌拒答**，说明职责边界
+- 无关问题 **禁止调用任何工具**，禁止编造数据
 
 ## 关键规则
-- 数字必须来自工具结果，没有就说"暂无该数据"
+
+- 数字必须来自工具结果，没有就说「暂无该数据」
 - 投资人评审必须基于真实数据
-- 敢于表态，不能模棱两可
-- 综合评分 0-100
+- 敢于表态，综合评分 0-100
 
 > 不构成投资建议
 """
+
+_PLAN_INSTRUCTION = """请仅针对用户最新问题，输出简洁分析计划（3-5 条，每条一行）：
+1. 用户意图是什么
+2. 最小必要工具（禁止无脑全量拉取；按问题选 1-3 个关键维度即可）
+3. 是否需要 role_play_investor（仅完整首诊或用户明确问投资人/多方观点时）
+4. 预期输出要点
+不要调用工具，不要写最终结论。"""
+
+_VERIFY_INSTRUCTION = """你是审查员。请审视上面的分析草稿，逐项检查后输出修正版最终结论：
+
+1. **数据支撑**：每个关键数字是否有工具返回的原始数据作为依据？无依据的数字要删除或标注"暂无数据"
+2. **内部一致**：不同数据源之间有无矛盾？（如 PE 很低但 ROE 也很低 → 可能是价值陷阱，要在结论中提醒）
+3. **评分合理**：综合评分是否考虑了正反两面？评分依据是否在正文中有体现？
+4. **覆盖完整**：用户问的所有点都覆盖了吗？遗漏的要补充
+5. **敢表态**：不要和稀泥。评分 0-100，看多/中性/看空要给出明确立场和理由
+
+如果发现严重数据缺失（用户问的关键维度没有工具数据覆盖），在结论中诚实说明缺了什么。
+如果草稿基本正确但有瑕疵，直接修正后输出完整版。
+
+不要输出审查过程，只输出修正后的最终结论（Markdown）。"""
 
 _STOCK_CODE_RE = re.compile(r"\b\d{6}\b")
 
@@ -164,6 +184,43 @@ def _latest_user_message(messages: list[dict[str, Any]]) -> str:
             return (msg.get("content") or "").strip()
     return ""
 
+
+def _needs_plan(messages: list[dict[str, Any]]) -> bool:
+    """Short follow-ups with prior tool context skip the extra planning LLM call."""
+    user_msg = _latest_user_message(messages)
+    if not user_msg:
+        return False
+    if _session_has_stock_context(messages) and len(user_msg) <= 24:
+        return False
+    return True
+
+
+def _create_plan(messages: list[dict[str, Any]]) -> tuple[list[str], str]:
+    """One-shot planning call; returns UI thinking steps and plan text for the first tool round."""
+    plan_messages = messages + [{"role": "user", "content": _PLAN_INSTRUCTION}]
+    response = _call_llm(plan_messages, tools=None)
+    plan = (response["choices"][0]["message"].get("content") or "").strip()
+    if not plan:
+        return [], ""
+    return [f"📋 计划\n{plan}"], plan
+
+def _verify_conclusion(messages: list[dict], draft: str) -> str:
+    """Self-reflection pass: review data sufficiency, consistency, and scoring."""
+    if not draft or not draft.strip():
+        return draft
+    verify_messages = list(messages) + [
+        {"role": "assistant", "content": draft},
+        {"role": "user", "content": _VERIFY_INSTRUCTION},
+    ]
+    try:
+        response = _call_llm(verify_messages, tools=None)
+        verified = (response["choices"][0]["message"].get("content") or "").strip()
+        return verified if verified else draft
+    except Exception:
+        logger.warning("Verification call failed, returning draft")
+        return draft
+
+
 def _append_assistant_reply(response: dict, messages: list[dict]) -> None:
     """Persist final assistant text when this turn has no tool_calls."""
     msg = response["choices"][0]["message"]
@@ -205,7 +262,7 @@ def _execute_tools(response: dict, messages: list[dict]) -> tuple[list[str], lis
 
     # 仅记录调工具前的中间说明；最终回复正文走 response，避免在 thinking 里重复一遍
     if msg.get("content") and msg.get("tool_calls"):
-        thinking.append(msg["content"])
+        thinking.append(f"💭 推理\n{msg['content']}")
 
     if not msg.get("tool_calls"):
         return thinking, tools_used
@@ -236,7 +293,7 @@ def _execute_tools(response: dict, messages: list[dict]) -> tuple[list[str], lis
         if len(result_str) > 2000:
             result_str = result_str[:2000] + '...(truncated)'
 
-        thinking.append(f"调用 {name}: {result_str[:200]}...")
+        thinking.append(f"🔧 {name}\n{result_str[:200]}...")
         messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result_str})
 
     return thinking, tools_used
@@ -254,20 +311,39 @@ def analyze(user_message: str) -> dict[str, Any]:
         {"role": "user", "content": user_message},
     ]
 
-    for _ in range(6):
-        response = _call_llm(messages, TOOL_SCHEMAS)
+    plan_hint = ""
+    if _needs_plan(messages):
+        plan_steps, plan_hint = _create_plan(messages)
+        thinking.extend(plan_steps)
+
+    for round_i in range(6):
+        llm_messages = messages
+        if plan_hint and round_i == 0:
+            llm_messages = messages + [{
+                "role": "user",
+                "content": f"【按以下计划执行，勿向用户复述计划】\n{plan_hint}",
+            }]
+        response = _call_llm(llm_messages, TOOL_SCHEMAS)
         new_thinking, new_tools = _execute_tools(response, messages)
         thinking.extend(new_thinking)
         tools_used.extend(new_tools)
 
-        # If LLM responded without tool calls, we're done
+        # If LLM responded without tool calls, verify then return
         if not response["choices"][0]["message"].get("tool_calls"):
-            return {"thinking": thinking, "conclusion": response["choices"][0]["message"]["content"] or "", "tools_used": tools_used}
+            draft = response["choices"][0]["message"]["content"] or ""
+            verified = _verify_conclusion(messages, draft)
+            if verified != draft:
+                thinking.append("🔍 自检：已审查数据支撑、一致性、评分依据")
+            return {"thinking": thinking, "conclusion": verified, "tools_used": tools_used}
 
     # Force conclusion
     messages.append({"role": "user", "content": "请基于以上数据给出最终分析结论。"})
     final = _call_llm(messages)
-    return {"thinking": thinking, "conclusion": final["choices"][0]["message"].get("content", ""), "tools_used": tools_used}
+    draft = final["choices"][0]["message"].get("content", "")
+    verified = _verify_conclusion(messages, draft)
+    if verified != draft:
+        thinking.append("🔍 自检：已审查数据支撑、一致性、评分依据")
+    return {"thinking": thinking, "conclusion": verified, "tools_used": tools_used}
 
 
 def _run_chat_loop(
@@ -282,18 +358,34 @@ def _run_chat_loop(
     thinking: list[str] = []
     tools_used: list[str] = []
 
-    for _ in range(max_rounds):
-        response = _call_llm(messages, TOOL_SCHEMAS)
+    plan_hint = ""
+    if _needs_plan(messages):
+        plan_steps, plan_hint = _create_plan(messages)
+        thinking.extend(plan_steps)
+
+    for round_i in range(max_rounds):
+        llm_messages = messages
+        if plan_hint and round_i == 0:
+            llm_messages = messages + [{
+                "role": "user",
+                "content": f"【按以下计划执行，勿向用户复述计划】\n{plan_hint}",
+            }]
+        response = _call_llm(llm_messages, TOOL_SCHEMAS)
         new_thinking, new_tools = _execute_tools(response, messages)
         thinking.extend(new_thinking)
         tools_used.extend(new_tools)
 
         if not response["choices"][0]["message"].get("tool_calls"):
+            draft = response["choices"][0]["message"]["content"] or ""
+            verified = _verify_conclusion(messages, draft)
+            if verified != draft:
+                thinking.append("🔍 自检：已审查数据支撑、一致性、评分依据")
+            response["choices"][0]["message"]["content"] = verified
             _append_assistant_reply(response, messages)
             save_session(conv_id, messages, visitor_id)
             return {
                 "conversation_id": conv_id,
-                "response": response["choices"][0]["message"]["content"] or "",
+                "response": verified,
                 "thinking": thinking,
                 "tools_used": tools_used,
                 "status": "ready",
@@ -301,11 +393,16 @@ def _run_chat_loop(
 
     messages.append({"role": "user", "content": force_final_prompt})
     final = _call_llm(messages)
+    draft = final["choices"][0]["message"].get("content", "")
+    verified = _verify_conclusion(messages, draft)
+    if verified != draft:
+        thinking.append("🔍 自检：已审查数据支撑、一致性、评分依据")
+    final["choices"][0]["message"]["content"] = verified
     _append_assistant_reply(final, messages)
     save_session(conv_id, messages, visitor_id)
     return {
         "conversation_id": conv_id,
-        "response": final["choices"][0]["message"].get("content", ""),
+        "response": verified,
         "thinking": thinking,
         "tools_used": tools_used,
         "status": "ready",

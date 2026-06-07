@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import MarkdownContent from './components/MarkdownContent.vue'
+import AgentSteps from './components/AgentSteps.vue'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 const messages = ref([])
@@ -101,6 +102,11 @@ async function loadConversation(conversationId) {
 }
 
 async function deleteConversation(conversationId) {
+  const target = conversations.value.find((item) => item.conversation_id === conversationId)
+  const label = target?.preview || conversationId
+  const confirmed = window.confirm(`确定删除这条对话吗？\n\n${label}\n\n删除后无法恢复。`)
+  if (!confirmed) return
+
   error.value = ''
   try {
     await request(`/api/chat/${conversationId}`, { method: 'DELETE' })
@@ -267,10 +273,11 @@ onMounted(refreshConversations)
           />
           <p v-else class="message-content">{{ message.content }}</p>
 
-          <details v-if="message.thinking?.length" class="thinking">
-            <summary>调用了 {{ message.toolsUsed.length }} 个工具</summary>
-            <pre v-for="(step, stepIndex) in message.thinking" :key="stepIndex">{{ step }}</pre>
-          </details>
+          <AgentSteps
+            v-if="message.thinking?.length"
+            :steps="message.thinking"
+            :tools-used="message.toolsUsed"
+          />
         </article>
 
         <article v-if="loading" class="message assistant">

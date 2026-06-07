@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from backend.app.services.agent import (
     OFF_TOPIC_REPLY,
     _append_assistant_reply,
     _execute_tools,
+    _needs_plan,
+    _verify_conclusion,
     begin_chat,
     get_chat_history,
     off_topic_reply,
@@ -90,9 +94,28 @@ def test_execute_tools_keeps_preface_before_tool_calls():
         }],
     }
     thinking, tools_used = _execute_tools(response, messages)
-    assert thinking[0] == "先查代码和数据"
-    assert thinking[1].startswith("调用 resolve_stock_code:")
+    assert thinking[0] == "💭 推理\n先查代码和数据"
+    assert thinking[1].startswith("🔧 resolve_stock_code:")
     assert tools_used == ["resolve_stock_code"]
+
+
+def test_needs_plan_skips_short_followup_with_context():
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "分析茅台"},
+        {"role": "tool", "tool_call_id": "1", "content": "{}"},
+        {"role": "assistant", "content": "结论"},
+        {"role": "user", "content": "北向呢？"},
+    ]
+    assert _needs_plan(messages) is False
+
+
+def test_needs_plan_for_new_analysis():
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "分析一下宁德时代"},
+    ]
+    assert _needs_plan(messages) is True
 
 
 def test_append_assistant_reply_skips_tool_turn():
@@ -137,3 +160,44 @@ def test_get_chat_history(temp_db):
 
 def test_get_chat_history_missing(temp_db):
     assert get_chat_history("nope") is None
+
+
+def test_verify_conclusion_returns_draft_when_empty():
+    """空草稿或纯空白直接返回，不浪费 LLM 调用"""
+    messages = [{"role": "user", "content": "分析茅台"}]
+    assert _verify_conclusion(messages, "") == ""
+    assert _verify_conclusion(messages, "  ") == "  "
+
+
+def test_verify_conclusion_fallback_on_llm_error():
+    """LLM 调用失败时降级返回原草稿"""
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "分析茅台"},
+    ]
+    with patch("backend.app.services.agent._call_llm", side_effect=RuntimeError("API down")):
+        result = _verify_conclusion(messages, "草稿内容")
+        assert result == "草稿内容"
+
+
+def test_verify_conclusion_returns_verified_text():
+    """正常情况返回 LLM 修正后的结论"""
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "分析茅台"},
+    ]
+    mock_response = {
+        "choices": [{"message": {"content": "修正后的结论"}}],
+    }
+    with patch("backend.app.services.agent._call_llm", return_value=mock_response):
+        result = _verify_conclusion(messages, "原始草稿")
+        assert result == "修正后的结论"
+
+
+def test_verify_conclusion_empty_llm_response_falls_back():
+    """LLM 返回空内容时降级"""
+    messages = [{"role": "system", "content": "sys"}]
+    mock_response = {"choices": [{"message": {"content": ""}}]}
+    with patch("backend.app.services.agent._call_llm", return_value=mock_response):
+        result = _verify_conclusion(messages, "原始草稿")
+        assert result == "原始草稿"
