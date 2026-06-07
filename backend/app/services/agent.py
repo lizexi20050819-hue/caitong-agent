@@ -149,14 +149,9 @@ def off_topic_reply(message: str, *, has_stock_context: bool = False) -> str | N
 
 
 def _session_has_stock_context(messages: list[dict[str, Any]]) -> bool:
+    """会话中是否已执行过工具调用（即有股票数据上下文）。"""
     for msg in messages:
         if msg.get("role") == "tool":
-            return True
-        content = (msg.get("content") or "")
-        lowered = content.lower()
-        if msg.get("role") == "user" and any(h in lowered for h in _INVESTMENT_HINTS):
-            return True
-        if _STOCK_CODE_RE.search(content):
             return True
     return False
 

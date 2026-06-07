@@ -90,14 +90,14 @@ def test_execute_tools_keeps_preface_before_tool_calls():
                 "content": "先查代码和数据",
                 "tool_calls": [{
                     "id": "tc1",
-                    "function": {"name": "resolve_stock_code", "arguments": '{"query":"茅台"}'},
+                    "function": {"name": "resolve_stock_code", "arguments": '{"name":"茅台"}'},
                 }],
             },
         }],
     }
     thinking, tools_used = _execute_tools(response, messages)
     assert thinking[0] == "💭 推理\n先查代码和数据"
-    assert thinking[1].startswith("🔧 resolve_stock_code:")
+    assert thinking[1].startswith("🔧 resolve_stock_code\n")
     assert tools_used == ["resolve_stock_code"]
 
 
