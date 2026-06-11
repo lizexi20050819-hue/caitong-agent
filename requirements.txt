@@ -11,3 +11,4 @@ baostock
 httpx
 langchain-core
 pytest
+tiktoken

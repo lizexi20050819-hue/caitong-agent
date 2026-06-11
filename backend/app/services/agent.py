@@ -28,6 +28,11 @@ from backend.app.services.tools import TOOL_MAP, TOOL_SCHEMAS
 
 logger = logging.getLogger(__name__)
 
+MAX_TOOL_ROUNDS_KEPT = 5
+TOOL_SNIPPET_CHARS = 800
+MAX_TOOL_SNIPPETS = 12
+SUMMARY_MAX_CHARS = 600
+
 SYSTEM_PROMPT = """你是 A 股投研 Agent。目标：理解用户意图，用**最少必要**的工具获取数据，给出有观点的结论。
 
 ## 工作方式（Agent 思维）
@@ -202,7 +207,7 @@ def _create_plan(messages: list[dict[str, Any]]) -> tuple[list[str], str]:
 
 def _compact_context(
     messages: list[dict[str, Any]],
-    max_tool_rounds: int = 3,
+    max_tool_rounds: int = MAX_TOOL_ROUNDS_KEPT,
 ) -> tuple[list[dict[str, Any]], bool]:
     """将早期工具调用结果压缩为 LLM 摘要，保留最近 N 轮完整上下文。
 
@@ -255,16 +260,18 @@ def _build_compaction_summary(old_messages: list[dict[str, Any]]) -> str:
         elif m.get("role") == "tool":
             content = (m.get("content") or "").strip()
             if content:
-                tool_snippets.append(content[:400])
+                tool_snippets.append(content[:TOOL_SNIPPET_CHARS])
 
     if not tool_snippets:
         return "此前无工具数据。"
 
     q_text = " | ".join(user_questions[-5:])
-    t_text = "\n---\n".join(tool_snippets[-8:])
+    t_text = "\n---\n".join(tool_snippets[-MAX_TOOL_SNIPPETS:])
 
     summary_prompt = (
-        "请用 200 字以内总结以下数据中的关键信息，只提取核心数字和结论，禁止编造：\n\n"
+        f"请用 {SUMMARY_MAX_CHARS} 字以内总结以下数据中的关键信息。"
+        "按工具类型分组，保留所有关键数字（PE/PB/ROE/负债率/北向持股比例/评级等），"
+        "禁止编造：\n\n"
         f"用户曾问：{q_text}\n\n"
         f"工具返回数据（节选）：\n{t_text}"
     )
@@ -436,9 +443,11 @@ def _run_chat_loop(
     tools_used: list[str] = []
 
     # 多轮追问时压缩早期工具结果，控制上下文窗口
-    messages, compacted = _compact_context(messages)
+    messages, compacted = _compact_context(messages, max_tool_rounds=MAX_TOOL_ROUNDS_KEPT)
     if compacted:
-        thinking.append("📦 上下文压缩：已将早期对话数据提炼为摘要，保留最近几轮完整结果")
+        thinking.append(
+            f"📦 上下文压缩：已将早期对话数据提炼为摘要，保留最近 {MAX_TOOL_ROUNDS_KEPT} 轮完整结果"
+        )
         save_session(conv_id, messages, visitor_id)
 
     plan_hint = ""

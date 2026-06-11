@@ -16,6 +16,13 @@
 
 ---
 
+## 踩坑日志
+
+| 日期 | 模块 | 现象 | 原因 | 处理 |
+|------|------|------|------|------|
+| 2026-06-10 | 上下文压缩 | 首诊 4 轮工具拉完后，**第一次追问**就触发压缩；追问「ROE / 股息率具体多少」时数字不准或让 Agent 重复调工具 | ① 保留窗口仅 **3 轮**，典型完整首诊正好 **4 轮**，累计 >3 即压；② 摘要仅 **200 字**，输入节选 **400 字符/条**，财务类 tool JSON（近 2000 字）信息损失大；③ 与 System Prompt「追问优先用已有 tool 结果」冲突 | **方案 B**（`agent.py`）：`MAX_TOOL_ROUNDS_KEPT` **3→5**（首诊 4 轮 + 1 次追问内不压）；`SUMMARY_MAX_CHARS` **200→600**；`TOOL_SNIPPET_CHARS` **400→800**；`MAX_TOOL_SNIPPETS` **8→12**。基准见下文「上下文压缩 → 效果」 |
+
+---
 ## 架构概览
 
 ```text
@@ -48,7 +55,73 @@
 - 投资人评审：巴菲特、格雷厄姆、段永平、彼得林奇、张坤、赵老哥、利弗莫尔、达里奥
 - 多轮追问：基于上下文增量回答，不重复整篇报告
 - **自检验证**：结论输出前审查数据支撑、内部一致性、评分合理性，修正后再输出
-- **上下文压缩**：多轮追问时自动将早期工具结果提炼为摘要，控制 token 消耗
+- **上下文压缩**：多轮追问时自动将早期工具结果提炼为摘要，控制 token 消耗（详见下文）
+
+---
+
+## 上下文压缩
+
+多轮追问时，历史 `tool` 返回会快速撑大 LLM 上下文。Agent 在每次进入对话循环前自动压缩早期轮次，在保留关键信息的同时降低 token 成本。
+
+### 机制
+
+实现位于 `backend/app/services/agent.py`（`_compact_context` / `_build_compaction_summary`）：
+
+| 规则 | 说明 |
+|------|------|
+| 触发条件 | 历史工具轮次 **> 5**（一轮 = 一次带 `tool_calls` 的 assistant 消息） |
+| 保留策略 | **最近 5 轮** tool 结果完整保留 |
+| 压缩方式 | 更早轮次由 LLM 提炼为 **600 字以内**摘要（输入节选 800 字符/条，最多 12 条），写入 `messages` |
+| 单条 tool 上限 | 写入上下文时单条结果最高 **2000 字符**（`_execute_tools` 截断） |
+| 持久化 | 压缩后的 `messages` 写回 `data/sessions.db` 的 `messages_json` |
+| 有损性 | 早期原始 tool JSON 被替换后不可恢复，仅保留摘要中的关键数字 |
+
+压缩后 LLM 仍能「看到」摘要（作为普通 `user` 消息），无需额外工具调用；前端 thinking 会显示 `📦 上下文压缩：…`。
+
+### 效果（基准测试）
+
+运行 `python scripts/benchmark_context_compaction.py` 实测（2026-06-10，内置 token 估算器；与 `tiktoken/cl100k_base` 趋势一致）。模拟真实 tool 体积（单条最高 2000 字符，与 `_execute_tools` 一致），摘要 LLM 调用在基准中用固定 mock 替代。
+
+**触发压缩的场景平均：全量上下文约省 27.0% token（约 1643 tokens/次）；被压缩的历史片段约省 92.2% token。**
+
+| 场景 | 工具轮次 | 压缩前 tokens | 压缩后 tokens | 节省 tokens | 全量节省 | 被压缩片段节省 |
+|------|----------|---------------|---------------|-------------|----------|----------------|
+| 阈值内（不触发） | 5 | 3,712 | 3,712 | 0 | 0% | — |
+| 轻度 | 6 | 4,670 | 4,304 | 366 | 7.8% | 80.4% |
+| 中度 | 7 | 5,481 | 4,157 | 1,324 | 24.2% | 93.7% |
+| 重度 | 10 | 7,391 | 4,307 | 3,084 | 41.7% | 97.2% |
+| 首诊 4 轮 + 追问 1 轮 | 5 | 3,903 | 3,903 | 0 | 0% | — |
+| 首诊 4 轮 + 追问 3 轮 | 7 | 5,008 | 3,716 | 1,292 | 25.8% | 93.6% |
+| 首诊 4 轮 + 追问 5 轮 | 9 | 5,946 | 3,126 | 2,820 | 47.4% | 96.9% |
+| 首诊 4 轮 + 每轮 3 工具 | 6 | 6,338 | 5,366 | 972 | 15.3% | 91.6% |
+两个百分比的含义：
+
+- **全量上下文节省**：整份 `messages`（含 system、最近 5 轮、用户消息）送入 LLM 前后的 token 变化。
+- **被压缩片段节省**：仅「第 5 轮以前」那段历史 → 替换成摘要后的缩减比例（通常 90%+）。
+
+对话越长、tool 轮次越多，全量节省越明显；最近 5 轮始终不压，保证首诊 4 轮 + 1 次追问内不触发压缩。
+
+### 如何复现测试
+
+```powershell
+# 查看完整基准报告（多场景对比表）
+python scripts/benchmark_context_compaction.py
+
+# 可选：精确 token 计数（需能 pip install tiktoken）
+pip install tiktoken
+python scripts/benchmark_context_compaction.py
+
+# 自动化断言（阈值、压缩率下限等，无需网络）
+python -m pytest tests/test_compaction_benchmark.py -v
+```
+
+相关文件：
+
+| 文件 | 用途 |
+|------|------|
+| `scripts/benchmark_context_compaction.py` | 基准测试主程序，输出各场景 token/字符节省百分比 |
+| `tests/test_compaction_benchmark.py` | pytest：验证触发阈值、压缩率下限 |
+| `tests/test_agent.py` | 验证压缩逻辑（摘要写入 messages、保留最近 N 轮） |
 
 ---
 
@@ -153,7 +226,14 @@ Streamlit 旧版：`streamlit run frontend/streamlit_app.py`（通常 http://loc
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-覆盖 Session、fetcher、LLM 配置、FastAPI 路由（LLM 已 mock）。
+覆盖 Session、fetcher、LLM 配置、FastAPI 路由、上下文压缩基准（LLM 已 mock）。
+
+上下文压缩专项：
+
+```powershell
+python scripts/benchmark_context_compaction.py
+python -m pytest tests/test_compaction_benchmark.py -v
+```
 
 ---
 
@@ -164,7 +244,7 @@ backend/app/
   main.py                 # FastAPI 路由、visitor Cookie
   models.py               # Pydantic 模型
   services/
-    agent.py              # Agent 主循环、begin/run/start/continue
+    agent.py              # Agent 主循环、上下文压缩、begin/run/start/continue
     session_store.py      # SQLite 持久化、visitor_id 隔离
     tools.py              # 12 个 LangChain 工具
     llm.py                # DeepSeek / OpenAI 配置
@@ -188,8 +268,10 @@ scripts/
   run_backend.ps1
   run_frontend_vue.ps1
   run_frontend.ps1        # Streamlit
+  benchmark_context_compaction.py  # 上下文压缩 token 基准测试
 
 tests/                    # pytest
+  test_compaction_benchmark.py   # 压缩率断言
 data/                     # sessions.db（运行时生成，gitignore）
 .github/workflows/deploy.yml
 ```
